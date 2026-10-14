@@ -1,4 +1,11 @@
 .venv
+.mypy_cache/
+.pytest_cache/
+.pytest_tmp/
+.agents/*
+!.agents/docs/
+configs/nova.local*.json
+run-evidence/
 data/
 models/*
 !models/chat_templates/

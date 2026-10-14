@@ -89,6 +89,7 @@ def _complete_decision_json(
     fallback_token: str | None = None,
     fallback_reason: str = "fallback after invalid decision JSON and token retry",
     debug: bool = False,
+    strict: bool = False,
 ) -> VLMResponse:
     json_prompt = (
         prompt
@@ -109,6 +110,36 @@ def _complete_decision_json(
         payload = response.payload.get("json")
         if not isinstance(payload, dict):
             raise RuntimeError(f"Decision JSON missing object payload: {response.raw_text!r}")
+        if strict:
+
+            def unique_fields(items):
+                result = {}
+                for key, value in items:
+                    if key in result:
+                        raise ValueError("duplicate decision JSON field")
+                    result[key] = value
+                return result
+
+            def reject_constant(value):
+                raise ValueError("non-finite decision JSON constant")
+
+            try:
+                raw_payload = json.loads(
+                    response.raw_text,
+                    object_pairs_hook=unique_fields,
+                    parse_constant=reject_constant,
+                )
+            except ValueError:
+                raise RuntimeError("Strict controller rejected raw decision JSON") from None
+            if (
+                set(payload) != {"decision", "reasoning"}
+                or not isinstance(payload["decision"], str)
+                or payload["decision"] not in allowed_tokens
+                or not isinstance(payload["reasoning"], str)
+                or raw_payload != payload
+            ):
+                raise RuntimeError("Strict controller rejected decision contract")
+            return VLMResponse(payload["decision"], response.raw_text, response.payload)
         decision = str(payload.get("decision", "")).strip()
         if decision not in allowed_tokens:
             raise RuntimeError(
@@ -125,6 +156,8 @@ def _complete_decision_json(
             payload=merged_payload,
         )
     except RuntimeError as exc:
+        if strict:
+            raise
         recovered = _recover_decision_from_malformed_json(exc, allowed_tokens)
         if recovered:
             decision, raw_text = recovered
@@ -352,8 +385,32 @@ class ControllerAgent:
         affordance_plugin: Any = None,
         action_ablation_plugin: Any = None,
         table_height_m: float | None = None,
+        strict_decisions: bool = False,
+        allowed_tokens: Sequence[str] | None = None,
     ) -> None:
         self.client = client
+        self.strict_decisions = strict_decisions
+        self.allowed_tokens = tuple(allowed_tokens) if allowed_tokens is not None else None
+        if strict_decisions and (
+            cot_mode
+            or any(
+                p is not None
+                for p in (
+                    mcq_plugin,
+                    variable_step_plugin,
+                    action_chunk_plugin,
+                    rotation_plugin,
+                    action_ablation_plugin,
+                )
+            )
+        ):
+            raise ValueError("Strict controller requires one JSON decision without action plugins")
+        if self.allowed_tokens is not None and (
+            not self.allowed_tokens
+            or not set(self.allowed_tokens).issubset(CONTROLLER_TOKENS)
+            or len(set(self.allowed_tokens)) != len(self.allowed_tokens)
+        ):
+            raise ValueError("Controller token subset must be nonempty, unique and native")
         self.prompt_template = prompt_template
         self.common_context = common_context
         self.cot_mode = cot_mode
@@ -407,9 +464,7 @@ class ControllerAgent:
         ):
             return ablation
         return (
-            self.mcq_plugin
-            if (self.mcq_plugin is not None and self.mcq_plugin.enabled)
-            else None
+            self.mcq_plugin if (self.mcq_plugin is not None and self.mcq_plugin.enabled) else None
         )
 
     def _wants_wrist(self) -> bool:
@@ -444,9 +499,7 @@ class ControllerAgent:
             else ""
         )
         gripper_proprio = (
-            self.proprio_plugin.render_gripper(proprio)
-            if self.proprio_plugin is not None
-            else ""
+            self.proprio_plugin.render_gripper(proprio) if self.proprio_plugin is not None else ""
         )
         mem_text = (
             self.mem_text_plugin.render_recent(recent_moves)
@@ -458,9 +511,7 @@ class ControllerAgent:
         )
         wrist_block = wrist_marker_prompt() if self._wants_wrist() else ""
         action_chunk_block = (
-            self.action_chunk_plugin.render_prompt()
-            if self.action_chunk_plugin is not None
-            else ""
+            self.action_chunk_plugin.render_prompt() if self.action_chunk_plugin is not None else ""
         )
         rotation_block = (
             self.rotation_plugin.render_prompt() if self.rotation_plugin is not None else ""
@@ -479,6 +530,13 @@ class ControllerAgent:
             )
             allowed_tokens = tuple(CONTROLLER_TOKENS) + rotation_tokens
             output_contract = _default_output_contract(rotation_tokens)
+        if self.allowed_tokens is not None:
+            allowed_tokens = self.allowed_tokens
+            output_contract = (
+                "Choose exactly one action: "
+                + ", ".join(allowed_tokens)
+                + '\nReturn JSON only: {"decision":"ONE_ACTION","reasoning":"one visual sentence"}'
+            )
 
         prompt = _join_prompt_parts(
             self.common_context,
@@ -488,9 +546,7 @@ class ControllerAgent:
                 stage=str(subgoal.get("motion", "")),
                 target=str(subgoal.get("target", "")),
                 affordance=(
-                    self.affordance_plugin.afford_field(
-                        "arm", str(subgoal.get("affordance", ""))
-                    )
+                    self.affordance_plugin.afford_field("arm", str(subgoal.get("affordance", "")))
                     if self.affordance_plugin is not None
                     else str(subgoal.get("affordance", ""))
                 ),
@@ -537,9 +593,7 @@ class ControllerAgent:
         # On a rare double parse failure, commit to the last movement direction
         # instead of crashing the episode (degraded-output safeguard, not control).
         # Under MCQ the fallback must be expressed in the answer alphabet (a letter).
-        fallback_token = (
-            previous_direction if previous_direction in DIRECTION_TOKENS else "MV_DOWN"
-        )
+        fallback_token = previous_direction if previous_direction in DIRECTION_TOKENS else "MV_DOWN"
         if mcq is not None:
             fallback_token = mcq.fallback_answer(fallback_token)
 
@@ -564,6 +618,7 @@ class ControllerAgent:
                 fallback_token=fallback_token,
                 fallback_reason="controller commit-fallback after invalid JSON and token retry",
                 debug=debug,
+                strict=self.strict_decisions,
             )
         if mcq is not None:
             response = mcq.map_response(response)

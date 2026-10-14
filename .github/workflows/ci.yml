@@ -7,16 +7,34 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: show-harness
+      - uses: actions/checkout@v4
+        with:
+          repository: shiuhou/inspect-robots-dobot
+          ref: cc84d90c9d365cd700fbf610d6ca67c64b1ea3f8
+          path: inspect-robots-dobot
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - name: Install
+        working-directory: show-harness
         run: |
           python -m pip install -U pip
-          pip install -r requirements/requirements.txt ruff==0.16.5 pytest
+          pip install -r requirements/requirements.txt -r requirements/requirements-nova.txt
       - name: Lint
+        working-directory: show-harness
         run: ruff check .
+      - name: Nova types and format
+        working-directory: show-harness
+        run: |
+          mypy --strict --follow-imports=silent core/nova interpreters/nova_atomic_controller.py
+          ruff format --check core/nova core/vlm/roles.py core/record/episode_logger.py interpreters/nova_atomic_controller.py tests/test_nova_m1.py
       - name: Tests
-        run: pytest tests/ -q
+        working-directory: show-harness
+        # Upstream dashboard fixtures use a loopback HTTP server; Nova tests
+        # explicitly disable all sockets, including loopback.
+        run: pytest tests/ -q --allow-hosts=127.0.0.1,localhost
       - name: Leak check
+        working-directory: show-harness
         run: bash scripts/leakcheck.sh

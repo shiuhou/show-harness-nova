@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import textwrap
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -22,6 +24,54 @@ _SENSITIVE_METADATA_KEYS = {
     "secret",
     "client_secret",
 }
+
+
+class M1Evidence:
+    """Bounded one-action evidence in a fresh directory; flush before physical send.
+
+    No video pipeline or close-time-only report is needed for M1. Each event and
+    lossless image is durable when the method returns. An I/O error propagates to
+    the caller/gate and must prevent sending. Existing episodes are never reused.
+    """
+
+    def __init__(self, run_dir: Path) -> None:
+        self.run_dir = run_dir
+        run_dir.mkdir(parents=True, exist_ok=False)
+        self._path = run_dir / "events.jsonl"
+        self._write_lock = threading.Lock()
+        with self._path.open("x", encoding="utf-8"):
+            pass
+        self._sync_directory()
+
+    def _sync_directory(self) -> None:
+        fd = os.open(self.run_dir, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+    def record(self, kind: str, **data: Any) -> None:
+        line = (
+            json.dumps(
+                _jsonable(_redact_sensitive_metadata({"kind": kind, **data})),
+                allow_nan=False,
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+        with self._write_lock, self._path.open("a", encoding="utf-8") as stream:
+            stream.write(line)
+            stream.flush()
+            os.fsync(stream.fileno())
+
+    def image(self, stage: str, camera: str, png: bytes) -> None:
+        if stage not in ("before", "after") or camera not in ("front_rgb", "wrist_rgb"):
+            raise ValueError("unknown M1 evidence image slot")
+        with (self.run_dir / f"{stage}_{camera}.png").open("xb") as stream:
+            stream.write(png)
+            stream.flush()
+            os.fsync(stream.fileno())
+        self._sync_directory()
 
 
 def _jsonable(value: Any) -> Any:
@@ -122,9 +172,7 @@ class EpisodeLogger:
 
     def write_metadata(self, data: dict[str, Any]) -> None:
         with (self.run_dir / "metadata.json").open("w", encoding="utf-8") as f:
-            json.dump(
-                _jsonable(_redact_sensitive_metadata(data)), f, indent=2, sort_keys=True
-            )
+            json.dump(_jsonable(_redact_sensitive_metadata(data)), f, indent=2, sort_keys=True)
 
     def write_calibration(self, data: dict[str, Any]) -> None:
         with (self.run_dir / "calibration.json").open("w", encoding="utf-8") as f:
@@ -140,17 +188,13 @@ class EpisodeLogger:
 
     def write_planner_diagnostics(self, data: dict[str, Any]) -> None:
         """Persist planner routes/errors without mixing them into the plan contract."""
-        with (self.run_dir / "planner_diagnostics.json").open(
-            "w", encoding="utf-8"
-        ) as f:
+        with (self.run_dir / "planner_diagnostics.json").open("w", encoding="utf-8") as f:
             json.dump(_jsonable(data), f, indent=2, sort_keys=True)
 
     def save_planner_prompt(self, attempt: int, prompt: str) -> None:
         prompts_dir = self.run_dir / "planner_prompts"
         prompts_dir.mkdir(parents=True, exist_ok=True)
-        (prompts_dir / f"attempt_{int(attempt):02d}.txt").write_text(
-            str(prompt), encoding="utf-8"
-        )
+        (prompts_dir / f"attempt_{int(attempt):02d}.txt").write_text(str(prompt), encoding="utf-8")
 
     def log_step(
         self,
@@ -176,13 +220,10 @@ class EpisodeLogger:
         # steps.json keeps the full reasoning; steps.jsonl gets a reasoning-truncated copy.
         self._full_records.append(_jsonable(record))
         self._steps_file.write(
-            json.dumps(_jsonable(_truncate_record_reasoning(record)), separators=(",", ":"))
-            + "\n"
+            json.dumps(_jsonable(_truncate_record_reasoning(record)), separators=(",", ":")) + "\n"
         )
         self._steps_file.flush()
-        self.video.append(
-            _make_analysis_frame(agentview=agentview, wrist=wrist, record=record)
-        )
+        self.video.append(_make_analysis_frame(agentview=agentview, wrist=wrist, record=record))
 
     def log_debug_payload(self, step_idx: int, payload: dict[str, Any]) -> None:
         self.debug_dir.mkdir(parents=True, exist_ok=True)
@@ -219,9 +260,7 @@ class EpisodeLogger:
         """Render the media manifest as the prompt file's header. See save_controller_prompt."""
         n_img = sum(1 for m in media if m.get("part_type") == "image_url")
         n_vid = sum(1 for m in media if m.get("part_type") == "video_url")
-        shape = ", ".join(
-            part for part, count in (("<image>", n_img), ("<video>", n_vid)) if count
-        )
+        shape = ", ".join(part for part, count in (("<image>", n_img), ("<video>", n_vid)) if count)
         lines = [
             "#",
             "# OpenAI content array actually sent (array order == placeholder order;",
@@ -302,9 +341,7 @@ class EpisodeLogger:
         self._steps_file.close()
         with self._steps_json_path.open("w", encoding="utf-8") as f:
             json.dump(self._full_records, f, indent=2, ensure_ascii=False)
-        video_path = self.run_dir / (
-            "rollout_success.mp4" if success else "rollout_failure.mp4"
-        )
+        video_path = self.run_dir / ("rollout_success.mp4" if success else "rollout_failure.mp4")
         # Frames were already streamed at the writer's fps (fixed at open time);
         # a differing late fps request cannot re-time them, only note it.
         if self.video.frame_count and abs(float(fps) - self.video.fps) > 1e-6:
@@ -330,21 +367,21 @@ _BAND_H = 48
 
 # Clean high-contrast light theme: near-white ground, crisp near-black text, and
 # saturated (but not neon) accents so states pop at a glance.
-BG_HEADER = (251, 251, 249)   # near-white
+BG_HEADER = (251, 251, 249)  # near-white
 BG_REASON = (245, 245, 242)
 BG_LABEL = (236, 237, 233)
-BG_PANEL = (223, 225, 221)    # letterbox / gutters around the camera frames
-RULE_C = (205, 208, 203)      # thin separators
-FG = (30, 34, 39)             # crisp near-black (primary text)
+BG_PANEL = (223, 225, 221)  # letterbox / gutters around the camera frames
+RULE_C = (205, 208, 203)  # thin separators
+FG = (30, 34, 39)  # crisp near-black (primary text)
 MUT = (94, 101, 110)
 FAINT = (150, 156, 163)
-ACC_LEFT = (13, 148, 136)     # teal    -- LEFT arm
-ACC_RIGHT = (124, 58, 237)    # violet  -- RIGHT arm (deliberately NOT red/pink:
-                               # red is reserved for failure states)
-ACC_NEUTRAL = (100, 116, 139) # slate   -- shared front view
-_OK_C = (22, 163, 74)          # green
-_WARN_C = (217, 119, 6)        # amber
-_BAD_C = (220, 38, 38)         # red
+ACC_LEFT = (13, 148, 136)  # teal    -- LEFT arm
+ACC_RIGHT = (124, 58, 237)  # violet  -- RIGHT arm (deliberately NOT red/pink:
+# red is reserved for failure states)
+ACC_NEUTRAL = (100, 116, 139)  # slate   -- shared front view
+_OK_C = (22, 163, 74)  # green
+_WARN_C = (217, 119, 6)  # amber
+_BAD_C = (220, 38, 38)  # red
 
 
 def _make_analysis_frame(
@@ -422,9 +459,12 @@ def _make_analysis_frame(
     for idx, (name, accent, rec) in bands.items():
         x0 = _PANEL * idx + 16
         _draw_segments(
-            draw, x0, band_y + 4,
+            draw,
+            x0,
+            band_y + 4,
             [(f"{name:<6}", accent, True), (_stage_label(rec), FG, False)],
-            std, std_b,
+            std,
+            std_b,
         )
         act = str(rec.get("dec") or rec.get("act") or "-")
         line2 = [(f"{act:<10}", FG, True), (f"grip {rec.get('grip', '-')}", MUT, False)]

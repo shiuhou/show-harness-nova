@@ -1,3 +1,16 @@
+## Dobot Nova / Gemini-4-Argon integration
+
+This fork adds a supervised M1 path: Argon → strict Show-Harness ControllerAgent →
+Nova translation interpreter → the existing `inspect-robots-dobot` one-shot gate.
+It supports six translations, preserves orientation and disables the gripper.
+Offline integration and API smoke tests pass; physical M1 acceptance is **NOT_RUN**.
+M2–M5 remain **NOT_STARTED**. No saved configuration authorizes hardware access.
+
+See the [Nova M1 runbook](.agents/docs/nova-m1.md) for setup, the private key file,
+API selection, evidence and remaining acceptance requirements. Use the Nova entry
+point; upstream real-robot runners contain behaviors outside this integration's
+authorization. Upstream history, attribution and license are retained below.
+
 <p align="right">
   <b>English</b> | <a href="./README.zh-CN.md">简体中文</a>
 </p>
