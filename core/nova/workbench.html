@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Nova · Argon 工作台</title>
+<style>
+:root{color-scheme:dark;--bg:#10151b;--panel:#19212b;--line:#303e4e;--muted:#a4b3c4;--accent:#75e2bd}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:#e8eef5;font:15px/1.5 system-ui,sans-serif}header{padding:22px 28px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:20px}h1{font-size:23px;margin:0}h2{font-size:17px;margin:0 0 14px}p{margin:8px 0}.muted,small{color:var(--muted)}main{max-width:1600px;margin:auto;padding:24px}.bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px}.badge{border:1px solid var(--line);padding:4px 10px;border-radius:20px;font-size:12px;color:var(--accent)}button,select,input,textarea{font:inherit;border:1px solid var(--line);border-radius:7px;color:inherit;background:#111922;padding:9px 12px}button{cursor:pointer}button:hover{border-color:var(--accent)}button:disabled{opacity:.45;cursor:not-allowed}.primary{background:#75e2bd;color:#10251f;font-weight:650}.danger{background:#8f2e38;color:white;border-color:#b44853}textarea,input{width:100%}textarea{resize:vertical;min-height:170px}label{display:block;margin:10px 0 6px;color:var(--muted)}section{background:var(--panel);padding:20px;border:1px solid var(--line);border-radius:10px;margin-bottom:20px}.cameras{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.camera{min-width:0}.camera img{width:100%;aspect-ratio:4/3;object-fit:contain;background:#080d12;border-radius:7px}.camera img.stale{opacity:.2}.caption{display:flex;justify-content:space-between;gap:8px;font-size:12px;margin:5px 0}.columns{display:grid;grid-template-columns:350px minmax(0,1fr);gap:20px}.detail{min-width:0}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.6 ui-monospace,monospace;background:#101720;padding:14px;max-height:450px;overflow:auto;border-radius:6px;margin:8px 0}details{border-top:1px solid var(--line);padding:12px 0}summary{cursor:pointer;font-weight:600}.steps{display:flex;gap:6px;overflow:auto;max-height:120px;margin:12px 0;padding:4px}.steps button{white-space:nowrap}.selected{border-color:var(--accent);color:var(--accent)}#error{color:#ffc0c6;min-height:24px}#runName{overflow-wrap:anywhere;font-size:12px}#runs{max-width:100%}.status{font-size:16px;color:var(--accent)}@media(max-width:1000px){.columns{grid-template-columns:1fr}}@media(max-width:650px){.cameras{grid-template-columns:1fr}header{padding:16px}main{padding:12px}}
+</style></head><body>
+<header><div><h1>Nova / Argon 工作台</h1><div class="muted">Gemini → Show-Harness → Nova interpreter → Motion gate</div></div><button class="danger" id="stop">停止当前任务</button></header>
+<main><div class="bar"><span class="badge">三镜头</span><span class="badge">EEF · LOW</span><span class="badge" id="motionLimit">V5 / A5</span><span class="badge">API / 总时长 / 步数 / 观测等待：无上限</span><span id="status" class="status">连接工作台…</span></div><div id="error" role="alert"></div>
+<section><div class="bar"><h2 style="margin:0">实时摄像头</h2><button id="preview">连接预览</button><small>约 2 帧/秒；与任务共享采集，不保存预览帧</small></div><div id="live" class="cameras"></div></section>
+<div class="columns"><aside><section><h2>手动任务</h2><label for="task">任务目标</label><input id="task" maxlength="16000" value="Pick up the black cube in front of the gripper and hold it safely."><label for="maxStep">最大单步位移（mm）</label><input id="maxStep" type="number" step="any" value="5" required><small id="stepRange"></small><label for="prompt">给 Gemini 的操作提示</label><textarea id="prompt" maxlength="16000"></textarea><p class="muted"><small>编辑内容在下一次启动生效。实际请求还会加入当前 TCP、坐标约定、动作格式和运动限制，右侧可查看全文。</small></p><button class="primary" id="start">启动真机任务</button><p><small>点击启动即执行真机任务及夹爪动作。保持现场监护和急停可及。网页停止是软件取消，不替代急停。</small></p></section>
+<section><h2>运行记录</h2><div class="bar"><button id="current">查看当前任务</button><button id="refresh">刷新历史</button></div><select id="runs"><option value="">选择历史记录</option></select><p id="runName" class="muted">尚未选择任务</p><small>模型 DONE 只表示结束请求；不代表抓取已成功。</small></section></aside>
+<section class="detail"><div class="bar"><h2 style="margin:0">每步观测与执行</h2><label style="margin:0"><input id="follow" type="checkbox" checked style="width:auto"> 跟随最新一步</label><span id="count" class="muted"></span></div><div id="steps" class="steps"></div><p id="stepTitle" class="muted">启动任务或选择历史记录后显示真实数据</p><div id="observations" class="cameras"></div>
+<details open><summary>Gemini 返回 / 决策</summary><pre id="response">暂无返回</pre></details>
+<details open><summary>上一动作与本步对比</summary><pre id="feedback">首步没有前后对比</pre></details>
+<details open><summary>Nova 动作 / 机械臂执行结果</summary><pre id="execution">暂无动作</pre></details>
+<details><summary>实际输入：完整 prompt、请求配置与图片清单</summary><pre id="request">暂无请求</pre></details>
+<details><summary>观测：TCP、夹爪与采集时间</summary><pre id="observation">暂无观测</pre></details>
+<details><summary>本步事件 / 运行异常</summary><pre id="events">暂无记录</pre></details><button id="more" hidden>继续加载记录</button>
+</section></div></main>
+<script>
+'use strict';
+const token='__TOKEN__';
+const el=id=>document.getElementById(id);
+const names={front_rgb:'前视',right_rgb:'右视',wrist_rgb:'腕部'};
+const phases={idle:'空闲',starting:'连接中',task_observation:'采集观测',model_request:'等待 Gemini',model_response:'收到返回',task_decision:'解析决策',task_motion_plan:'准备动作',task_execution:'动作返回',gripper_command:'夹爪动作',entry_failed:'运行失败',summary:'任务结束',hardware_check:'检查夹爪',hardware_check_failed:'夹爪检查失败'};
+const statuses={idle:'空闲',running:'运行中',stopping:'正在停止',stopped:'已停止',finished:'已结束',failed:'失败'};
+let state={},viewRun=null,cursor=0,version=0,selected=null,lastStep=null,steps=new Map(),misc=[],autoRun=true,loading=false;
+function text(id,value){el(id).textContent=typeof value==='string'?value:JSON.stringify(value,null,2)}
+async function api(path,body){const r=await fetch(path,{method:body?'POST':'GET',headers:body?{'Content-Type':'application/json','X-Nova-Token':token}:{},body:body?JSON.stringify(body):undefined});const data=await r.json();if(!r.ok)throw Error(data.error||r.status);return data}
+function fail(e){text('error',e.message)}
+async function post(path,body){text('error','');try{return await api(path,body)}catch(e){fail(e);throw e}}
+for(const name of Object.keys(names)){const box=document.createElement('div');box.className='camera';const image=document.createElement('img');image.alt=names[name]+'实时画面';image.className='stale';const caption=document.createElement('div');caption.className='caption';const label=document.createElement('span');label.textContent=names[name];const status=document.createElement('span');status.textContent='未连接';caption.append(label,status);box.append(image,caption);el('live').append(box);
+let url=null;
+async function frame(){try{if(state.preview&&!document.hidden){const r=await fetch('/api/frame?camera='+name,{signal:AbortSignal.timeout(4000)});if(!r.ok)throw Error('画面不可用');const next=URL.createObjectURL(await r.blob());image.src=next;image.classList.remove('stale');if(url)URL.revokeObjectURL(url);url=next;status.textContent=new Date().toLocaleTimeString()}else{image.classList.add('stale');status.textContent='未连接 / 已暂停'}}catch(e){image.classList.add('stale');status.textContent='画面失效'}finally{setTimeout(frame,500)}}frame();}
+function reset(run){version++;viewRun=run;cursor=0;steps.clear();misc=[];selected=null;lastStep=null;text('runName',run||'尚未选择任务');render();}
+function ingest(event){if(event.kind==='task_observation')lastStep=event.action_index;const index=event.action_index??lastStep;if(index==null){misc.push(event);misc=misc.slice(-50);return}if(!steps.has(index))steps.set(index,[]);steps.get(index).push(event);if(steps.size>200)steps.delete(steps.keys().next().value);if(el('follow').checked)selected=index;}
+function render(){
+const list=el('steps');list.replaceChildren();
+for(const index of steps.keys()){const b=document.createElement('button');b.textContent='第 '+(index+1)+' 步';b.className=selected===index?'selected':'';b.onclick=()=>{selected=index;el('follow').checked=false;render()};list.append(b)}
+text('count',steps.size?'显示最近 '+steps.size+' 步':'');
+const events=steps.get(selected)||[];const find=kind=>events.filter(e=>e.kind===kind);
+const obs=find('task_observation').at(-1);const feedback=find('task_feedback').at(-1);
+const hardwareFailure=[...misc,...events].filter(e=>e.kind==='hardware_check_failed').at(-1);
+const response=find('model_response').at(-1);const latency=response?.latency_s;
+const request=find('model_request').at(-1);const decision=find('task_decision').at(-1);
+text('response',response?{response,decision:decision||null}:(hardwareFailure?'夹爪启动检查失败，尚未请求 Gemini':'等待模型返回'));
+text('feedback',feedback||'本步没有记录前后对比（首步或旧版记录）');
+text('request',request||'暂无请求');
+text('execution',hardwareFailure||events.filter(e=>['task_motion_plan','task_execution','gripper_command','task_terminal','summary','entry_failed'].includes(e.kind)));
+text('observation',obs||'暂无观测');text('events',[...misc,...events]);
+text('stepTitle',obs?'第 '+(selected+1)+' 步'+(latency!=null?' · API '+latency.toFixed(2)+'s':' · 等待返回')+' · 观测图（按请求记录还原上传尺寸）':'等待观测');
+const images=el('observations');images.replaceChildren();
+const cards=obs?Object.keys(names).map(name=>({file:'step_'+String(selected).padStart(3,'0')+'_'+name+'.png',caption:names[name]+' · 当前观测',manifest:request?.images?.find(m=>!m.label?.includes('PREVIOUS')&&m.label?.toLowerCase().includes(name.split('_')[0]+' rgb'))})):[];
+if(feedback?.previous_wrist_image)cards.push({file:feedback.previous_wrist_image.file,caption:'腕部 · 上一动作前（历史对比）',manifest:request?.images?.find(m=>m.label?.includes('PREVIOUS'))});
+for(const card of cards){const box=document.createElement('div');box.className='camera';const img=document.createElement('img');const edge=card.manifest?.resize_max_edge||0;img.src='/api/image?'+new URLSearchParams({run:viewRun,file:card.file,edge});img.alt=card.caption;img.onerror=()=>{img.className='stale'};const caption=document.createElement('div');caption.className='caption';caption.textContent=card.caption;box.append(img,caption);images.append(box)}
+}
+async function load(){if(!viewRun||loading)return;loading=true;const generation=version;try{const data=await api('/api/events?'+new URLSearchParams({run:viewRun,cursor}));if(version!==generation)return;cursor=data.cursor;data.events.forEach(ingest);if(data.events.length)render();el('more').hidden=!data.more;return data.more}catch(e){fail(e)}finally{loading=false}}
+async function poll(){try{state=await api('/api/state');el('preview').textContent=state.preview?'断开预览':'连接预览';el('preview').disabled=state.active;el('start').disabled=state.active||!state.preview;el('stop').disabled=!state.active;el('maxStep').disabled=state.active;if(!el('maxStep').dataset.loaded){el('maxStep').value=state.defaults.max_step_mm;el('maxStep').min=state.limits.min_step_mm_exclusive;el('maxStep').max=state.limits.max_step_mm;el('maxStep').dataset.loaded='1';text('stepRange','三维位移向量长度上限，须 > '+state.limits.min_step_mm_exclusive+' 且 ≤ '+state.limits.max_step_mm+' mm；下一次启动生效。')}text('motionLimit',(state.active?'本轮 ≤ '+state.max_step_mm+' mm · ':'')+'V5 / A5');if(!el('prompt').dataset.loaded){el('prompt').value=localStorage.getItem('nova-prompt')||state.defaults.prompt;el('prompt').dataset.loaded='1'}if(autoRun&&state.run!==viewRun&&state.run)reset(state.run);const seconds=Math.max(0,(Date.now()/1000-state.phase_at)).toFixed(1);text('status',(statuses[state.status]||state.status)+' · '+(phases[state.phase]||state.phase)+(state.active?' · '+seconds+'s':''));await load()}catch(e){fail(e);text('status','工作台连接中断；机械臂状态未知');el('start').disabled=true}finally{setTimeout(poll,500)}}
+async function history(){try{const data=await api('/api/runs');el('runs').replaceChildren(new Option('选择历史记录',''));for(const run of data.runs)el('runs').add(new Option(run,run))}catch(e){fail(e)}}
+el('preview').onclick=async()=>{el('preview').disabled=true;try{state=await post('/api/preview',{enabled:!state.preview})}catch{}finally{el('preview').disabled=!!state.active}};
+el('start').onclick=async()=>{el('start').disabled=true;try{const maxStep=el('maxStep').valueAsNumber;if(!Number.isFinite(maxStep)||maxStep<=state.limits.min_step_mm_exclusive||maxStep>state.limits.max_step_mm)throw Error('请填写范围内的最大步长');state=await post('/api/start',{task:el('task').value,prompt:el('prompt').value,max_step_mm:maxStep});autoRun=true;reset(state.run);el('follow').checked=true;history()}catch(e){fail(e)}};
+el('stop').onclick=async()=>{try{state=await post('/api/stop',{})}catch{}};
+el('prompt').oninput=()=>localStorage.setItem('nova-prompt',el('prompt').value);
+el('runs').onchange=()=>{if(el('runs').value){autoRun=false;reset(el('runs').value);load()}};
+el('current').onclick=()=>{autoRun=true;reset(state.run);load()};el('refresh').onclick=history;el('more').onclick=load;el('follow').onchange=()=>{if(el('follow').checked){selected=lastStep;render()}};
+history();poll();
+</script></body></html>

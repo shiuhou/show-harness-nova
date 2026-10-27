@@ -6,7 +6,7 @@ import textwrap
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -34,8 +34,16 @@ class M1Evidence:
     the caller/gate and must prevent sending. Existing episodes are never reused.
     """
 
-    def __init__(self, run_dir: Path) -> None:
+    def __init__(
+        self,
+        run_dir: Path,
+        *,
+        console: bool = False,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
+    ) -> None:
         self.run_dir = run_dir
+        self.console = console
+        self.on_event = on_event
         run_dir.mkdir(parents=True, exist_ok=False)
         self._path = run_dir / "events.jsonl"
         self._write_lock = threading.Lock()
@@ -51,6 +59,7 @@ class M1Evidence:
             os.close(fd)
 
     def record(self, kind: str, **data: Any) -> None:
+        data.setdefault("recorded_at", datetime.now(timezone.utc).isoformat())
         line = (
             json.dumps(
                 _jsonable(_redact_sensitive_metadata({"kind": kind, **data})),
@@ -63,9 +72,37 @@ class M1Evidence:
             stream.write(line)
             stream.flush()
             os.fsync(stream.fileno())
+            if self.on_event is not None:
+                self.on_event(json.loads(line))
+            if self.console:
+                if kind in (
+                    "model_response",
+                    "task_execution",
+                    "gripper_command",
+                    "supervision_failed",
+                    "summary",
+                    "entry_failed",
+                ):
+                    print(line.rstrip(), flush=True)
+                elif kind == "model_request":
+                    print("Gemini-4-Argon request sent; awaiting response.", flush=True)
+                elif kind == "task_decision":
+                    print(
+                        f"Show-Harness action {data['action_index']}: {data['token']}", flush=True
+                    )
+                elif kind == "task_motion_plan":
+                    print(f"Nova proposed command: {data['command']}", flush=True)
+                elif (
+                    kind == "gate_event"
+                    and data.get("event", {}).get("kind") == "authority_consumed"
+                ):
+                    print(json.dumps(_jsonable(data["event"]), ensure_ascii=False), flush=True)
 
     def image(self, stage: str, camera: str, png: bytes) -> None:
-        if stage not in ("before", "after") or camera not in ("front_rgb", "wrist_rgb"):
+        if (
+            stage not in ("before", "after")
+            and not (stage.startswith("step_") and stage[5:].isdigit())
+        ) or camera not in ("front_rgb", "right_rgb", "wrist_rgb"):
             raise ValueError("unknown M1 evidence image slot")
         with (self.run_dir / f"{stage}_{camera}.png").open("xb") as stream:
             stream.write(png)

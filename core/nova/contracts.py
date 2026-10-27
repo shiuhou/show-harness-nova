@@ -22,6 +22,41 @@ M1_TOKENS = (*MOVE_TOKENS, "DONE")
 RGB = npt.NDArray[np.uint8]
 Vector = tuple[float, float, float]
 
+EEF_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "decision": {"type": "string", "enum": ["EEF_MOVE", "GRASP", "RELEASE", "DONE"]},
+        "delta_mm": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
+        "reasoning": {"type": "string"},
+    },
+    "required": ["decision", "delta_mm", "reasoning"],
+    "additionalProperties": False,
+}
+
+
+def eef_delta(payload: Any, maximum_m: float) -> Vector:
+    """Reject malformed/oversized output; never clamp or split model actions."""
+    if not isinstance(payload, dict) or set(payload) != {"decision", "delta_mm", "reasoning"}:
+        raise ValueError("invalid EEF response fields")
+    token, values = payload["decision"], payload["delta_mm"]
+    if token not in ("EEF_MOVE", "GRASP", "RELEASE", "DONE") or not isinstance(
+        payload["reasoning"], str
+    ):
+        raise ValueError("invalid EEF decision")
+    if (
+        not isinstance(values, list)
+        or len(values) != 3
+        or any(type(v) not in (int, float) or not math.isfinite(v) for v in values)
+    ):
+        raise ValueError("EEF delta requires three finite numbers in millimetres")
+    delta = (values[0] / 1000, values[1] / 1000, values[2] / 1000)
+    length = math.hypot(*delta)
+    if not math.isfinite(maximum_m) or maximum_m <= 0 or length > maximum_m:
+        raise ValueError("EEF translation exceeds displacement budget")
+    if (token == "EEF_MOVE" and length == 0) or (token != "EEF_MOVE" and length != 0):
+        raise ValueError("EEF_MOVE requires displacement; other actions require zero delta")
+    return delta
+
 
 def strict_json(text: str) -> Any:
     def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -125,6 +160,10 @@ class M1Config:
                 raise ValueError("M1 limits must be finite positive numbers")
         if self.step_m > 0.020 or self.observation_lifetime_s > 30:
             raise ValueError("M1 engineering caps: 20mm translation, 30s observation lifetime")
+        # The first physical chain test uses the existing measured-start +Z
+        # gate. It needs no invented mapping for the other five directions.
+        if self.base_z_trial:
+            return
         if len(self.directions) != 6 or set(dict(self.directions)) != set(MOVE_TOKENS):
             raise ValueError("explicit mapping of all six unique MV tokens required")
         vectors = dict(self.directions)
@@ -141,6 +180,14 @@ class M1Config:
             for other in axes[i + 1 :]:
                 if abs(sum(a * b for a, b in zip(axis, other))) > 1e-9:
                     raise ValueError("direction axes must be orthogonal")
+
+    @property
+    def base_z_trial(self) -> bool:
+        return self.directions == (("MV_UP", (0.0, 0.0, 1.0)),)
+
+    @property
+    def allowed_tokens(self) -> tuple[str, ...]:
+        return ("MV_UP", "DONE") if self.base_z_trial else M1_TOKENS
 
     @classmethod
     def load(cls, path: Path) -> M1Config:
@@ -160,8 +207,15 @@ class M1Config:
         if type(obs.scene_epoch) is not int or obs.scene_epoch < 0:
             raise ValueError("invalid scene epoch")
         names = tuple(im.camera for im in obs.images)
-        if names not in (("front_rgb",), ("front_rgb", "wrist_rgb")):
-            raise ValueError("M1 needs front RGB, optionally wrist RGB, in declared order")
+        if names not in (
+            ("front_rgb",),
+            ("wrist_rgb",),
+            ("front_rgb", "wrist_rgb"),
+            ("front_rgb", "right_rgb", "wrist_rgb"),
+        ):
+            raise ValueError(
+                "M1 needs front, wrist, front/wrist or front/right/wrist RGB in declared order"
+            )
         times = [im.captured_at for im in obs.images] + [obs.measured.observed_at]
         if not math.isfinite(now) or not all(math.isfinite(t) and 0 <= t <= now for t in times):
             raise ValueError("invalid observation timestamp")

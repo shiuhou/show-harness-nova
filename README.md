@@ -294,3 +294,9 @@ If you like the project, please give us a star ⭐ — it is how we hear that it
     <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=showlab/Show-Harness&type=Date" width="100%">
   </a>
 </p>
+
+
+The Nova integration also provides an offline-tested three-view EEF task/workbench
+research interface. It requires explicit reviewed rig, semantic and gripper settings;
+physical grasp acceptance remains incomplete. See the current interface and limits
+in [the Nova runbook](.agents/docs/nova-m1.md).

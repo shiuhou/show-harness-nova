@@ -20,6 +20,21 @@ CONTROLLER_TOKENS = DIRECTION_TOKENS + ("GRASP", "RELEASE", "DONE")
 TOKEN_CHAT_TEMPLATE_KWARGS = {"enable_thinking": False, "thinking": False}
 
 
+def _image_labels(
+    agentview_label: str | None,
+    wrist_label: str | None,
+    additional_images: Sequence[tuple[str, Any]] = (),
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        key: value
+        for key, value in (("agentview_label", agentview_label), ("wrist_label", wrist_label))
+        if value is not None
+    }
+    if additional_images:
+        kwargs["additional_images"] = additional_images
+    return kwargs
+
+
 def _join_prompt_parts(*parts: str) -> str:
     return "\n\n".join(part.strip() for part in parts if part and part.strip())
 
@@ -90,6 +105,9 @@ def _complete_decision_json(
     fallback_reason: str = "fallback after invalid decision JSON and token retry",
     debug: bool = False,
     strict: bool = False,
+    agentview_label: str | None = None,
+    wrist_label: str | None = None,
+    additional_images: Sequence[tuple[str, Any]] = (),
 ) -> VLMResponse:
     json_prompt = (
         prompt
@@ -106,6 +124,7 @@ def _complete_decision_json(
             temperature=0.0,
             chat_template_kwargs=TOKEN_CHAT_TEMPLATE_KWARGS,
             debug=debug,
+            **_image_labels(agentview_label, wrist_label, additional_images),
         )
         payload = response.payload.get("json")
         if not isinstance(payload, dict):
@@ -190,6 +209,9 @@ def _complete_decision_json(
             debug=debug,
             json_error=exc,
             primary_reasoning=_reasoning_from_exception(exc),
+            agentview_label=agentview_label,
+            wrist_label=wrist_label,
+            additional_images=additional_images,
         )
 
 
@@ -202,6 +224,9 @@ def _complete_cot_decision(
     fallback_token: str | None = None,
     fallback_reason: str = "cot fallback after no recoverable token",
     debug: bool = False,
+    agentview_label: str | None = None,
+    wrist_label: str | None = None,
+    additional_images: Sequence[tuple[str, Any]] = (),
 ) -> VLMResponse:
     """Reasoner path: a reasoner only grounds spatially when it reasons BEFORE
     answering, so this does NOT use guided JSON (which forces the answer at token
@@ -230,6 +255,7 @@ def _complete_cot_decision(
         chat_template_kwargs={},
         strip_reasoning=False,
         debug=debug,
+        **_image_labels(agentview_label, wrist_label, additional_images),
     )
     raw_text = response.raw_text or ""
     token = recover_allowed_token(raw_text, allowed_tokens)
@@ -256,6 +282,9 @@ def _complete_cot_decision(
         wrist_image=wrist_image,
         debug=debug,
         primary_reasoning=_one_line(raw_text),
+        agentview_label=agentview_label,
+        wrist_label=wrist_label,
+        additional_images=additional_images,
     )
 
 
@@ -271,6 +300,9 @@ def _token_retry_or_fallback(
     json_error: RuntimeError | None = None,
     extra_fields: dict[str, str] | None = None,
     primary_reasoning: str = "",
+    agentview_label: str | None = None,
+    wrist_label: str | None = None,
+    additional_images: Sequence[tuple[str, Any]] = (),
 ) -> VLMResponse:
     tokens = tuple(allowed_tokens)
     if not tokens:
@@ -284,6 +316,7 @@ def _token_retry_or_fallback(
             wrist_image=wrist_image,
             chat_template_kwargs=TOKEN_CHAT_TEMPLATE_KWARGS,
             debug=debug,
+            **_image_labels(agentview_label, wrist_label, additional_images),
         )
         # Keep the model's own reasoning from the first pass; the token just came from
         # a strict-retry call. Only fall back to the bare label when no reasoning exists.
@@ -488,6 +521,9 @@ class ControllerAgent:
         proprio: dict[str, Any] | None = None,
         recovery_context: str = "",
         debug: bool = False,
+        agentview_label: str | None = None,
+        wrist_label: str | None = None,
+        additional_images: Sequence[tuple[str, Any]] = (),
     ) -> VLMResponse:
         # Tools choose the prompt's context block and answer protocol. proprio (context
         # provider) is additive; mcq (answer protocol) is one-or-the-other with the default.
@@ -607,6 +643,9 @@ class ControllerAgent:
                 fallback_token=fallback_token,
                 fallback_reason="controller cot commit-fallback after no recoverable token",
                 debug=debug,
+                agentview_label=agentview_label,
+                wrist_label=wrist_label,
+                additional_images=additional_images,
             )
         else:
             response = _complete_decision_json(
@@ -619,6 +658,9 @@ class ControllerAgent:
                 fallback_reason="controller commit-fallback after invalid JSON and token retry",
                 debug=debug,
                 strict=self.strict_decisions,
+                agentview_label=agentview_label,
+                wrist_label=wrist_label,
+                additional_images=additional_images,
             )
         if mcq is not None:
             response = mcq.map_response(response)

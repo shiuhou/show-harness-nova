@@ -6,7 +6,9 @@ repository owns Show-Harness roles/provider and Nova semantic integration;
 
 No current-session authorization means no robot, camera, Leader or gripper
 connection. M1 is translation only, fixed orientation, gripper disabled, one
-operator-confirmed action. Never import the upstream real runner for Nova: it
+operator-confirmed action. The separate task/workbench research path requires explicit
+current-session readiness, a reviewed general rig and semantic profile, and trusted
+X-Trainer gripper settings. Its offline tests do not authorize physical operation. Never import the upstream real runner for Nova: it
 contains startup release and recovery behaviors. No movement fallback, retry,
 reconnect, enabling, clearing faults, homing or automatic release in Nova.
 

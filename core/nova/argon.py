@@ -17,6 +17,8 @@ from urllib.parse import urlsplit
 import jsonschema
 from google import genai
 from google.genai import types
+from PIL import Image
+import numpy as np
 
 from core.nova.contracts import RGB, png_bytes, strict_json
 from core.vlm.vlm_client import VLMResponse
@@ -68,9 +70,10 @@ def local_settings(path: Path) -> dict[str, str]:
     return result
 
 
-def sdk_client(settings: dict[str, str], timeout_s: float) -> genai.Client:
+def sdk_client(settings: dict[str, str], timeout_s: float | None) -> genai.Client:
     options = types.HttpOptions(
-        timeout=math.ceil(timeout_s * 1000), retry_options=types.HttpRetryOptions(attempts=1)
+        timeout=None if timeout_s is None else math.ceil(timeout_s * 1000),
+        retry_options=types.HttpRetryOptions(attempts=1),
     )
     if settings.get("GOOGLE_GEMINI_BASE_URL"):
         options.base_url = settings["GOOGLE_GEMINI_BASE_URL"]
@@ -88,22 +91,34 @@ class ArgonClient:
         self,
         sdk: Any,
         *,
-        timeout_s: float,
+        timeout_s: float | None,
         max_tokens: int = 512,
         request_sink: Callable[[dict[str, Any]], None] | None = None,
         response_sink: Callable[[dict[str, Any]], None] | None = None,
         api: Literal["interactions", "generate-content"] = "interactions",
+        image_max_edge: int | None = None,
+        thinking_level: Literal["low", "medium"] = "medium",
+        wait_check: Callable[[], None] | None = None,
     ) -> None:
-        if not math.isfinite(timeout_s) or not 0 < timeout_s <= 30:
+        if timeout_s is not None and (not math.isfinite(timeout_s) or not 0 < timeout_s <= 30):
             raise ValueError("Argon timeout must be in (0,30] seconds")
         if type(max_tokens) is not int or not 1 <= max_tokens <= 8192:
             raise ValueError("bounded output token budget required")
         if api not in ("interactions", "generate-content"):
             raise ValueError("select one supported API explicitly; no endpoint fallback")
+        if thinking_level not in ("low", "medium"):
+            raise ValueError("select low or medium thinking explicitly")
+        if image_max_edge is not None and (
+            type(image_max_edge) is not int or not 64 <= image_max_edge <= 2048
+        ):
+            raise ValueError("explicit model image edge must be in [64,2048] pixels")
         self.api = api
         self.sdk, self.timeout_s, self.max_tokens = sdk, timeout_s, max_tokens
         self.request_sink = request_sink
         self.response_sink = response_sink
+        self.image_max_edge = image_max_edge
+        self.thinking_level = thinking_level
+        self.wait_check = wait_check
         self._lock = threading.Lock()
 
     def _reject(self, reason: str) -> NoReturn:
@@ -121,6 +136,7 @@ class ArgonClient:
         temperature: float | None,
         agentview_label: str,
         wrist_label: str,
+        additional_images: Sequence[tuple[str, RGB]] = (),
     ) -> VLMResponse:
         if not self._lock.acquire(blocking=False):
             raise RuntimeError("one pending Argon request only")
@@ -128,9 +144,26 @@ class ArgonClient:
         parts: list[types.Part] = []
         manifest = []
         try:
-            for label, rgb in ((agentview_label, agentview_image), (wrist_label, wrist_image)):
+            if len(additional_images) > 2:
+                raise ValueError(
+                    "Argon supports at most four images including one historical comparison"
+                )
+            images = (
+                (agentview_label, agentview_image),
+                (wrist_label, wrist_image),
+                *additional_images,
+            )
+            for label, rgb in images:
                 if rgb is None:
                     continue
+                source_png = png_bytes(rgb)
+                source_shape = list(rgb.shape)
+                if self.image_max_edge is not None:
+                    resized = Image.fromarray(rgb)
+                    resized.thumbnail(
+                        (self.image_max_edge, self.image_max_edge), Image.Resampling.LANCZOS
+                    )
+                    rgb = np.asarray(resized, dtype=np.uint8)
                 png = png_bytes(rgb)
                 parts.extend(
                     [
@@ -154,6 +187,9 @@ class ArgonClient:
                         "sha256": hashlib.sha256(png).hexdigest(),
                         "mime_type": "image/png",
                         "shape": list(rgb.shape),
+                        "source_sha256": hashlib.sha256(source_png).hexdigest(),
+                        "source_shape": source_shape,
+                        "resize_max_edge": self.image_max_edge,
                     }
                 )
             inputs.append({"type": "text", "text": prompt})
@@ -161,7 +197,10 @@ class ArgonClient:
             budget = self.max_tokens if max_tokens is None else max_tokens
             if type(budget) is not int or not 1 <= budget <= self.max_tokens:
                 raise ValueError("request exceeds provider token budget")
-            generation: dict[str, Any] = {"thinking_level": "medium", "max_output_tokens": budget}
+            generation: dict[str, Any] = {
+                "thinking_level": self.thinking_level,
+                "max_output_tokens": budget,
+            }
             if temperature is not None:
                 if not math.isfinite(temperature) or not 0 <= temperature <= 2:
                     raise ValueError("invalid temperature")
@@ -189,7 +228,9 @@ class ArgonClient:
                 # caller selects the API before sending; never switch on failure.
                 config = types.GenerateContentConfig(
                     system_instruction=SYSTEM_INSTRUCTION,
-                    thinking_config=types.ThinkingConfig(thinking_level=types.ThinkingLevel.MEDIUM),
+                    thinking_config=types.ThinkingConfig(
+                        thinking_level=types.ThinkingLevel(self.thinking_level.upper())
+                    ),
                     max_output_tokens=budget,
                     temperature=temperature,
                     candidate_count=1,
@@ -206,6 +247,7 @@ class ArgonClient:
                     "config": config.model_dump(mode="json", exclude_none=True),
                 }
             public_request["api"] = self.api
+            public_request["timeout_s"] = self.timeout_s
             public_request.update(prompt=prompt, images=manifest)
             if self.request_sink:
                 self.request_sink(public_request)
@@ -230,12 +272,22 @@ class ArgonClient:
 
         started = time.monotonic()
         threading.Thread(target=call, name="argon-one-request", daemon=True).start()
-        try:
-            ok, interaction = results.get(timeout=self.timeout_s)
-        except queue.Empty:
-            if self.response_sink:
-                self.response_sink({"api": self.api, "outcome": "deadline_exceeded"})
-            raise TimeoutError("Argon request deadline exceeded; late response discarded") from None
+        deadline = None if self.timeout_s is None else started + self.timeout_s
+        while True:
+            if self.wait_check is not None:
+                self.wait_check()
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                if self.response_sink:
+                    self.response_sink({"api": self.api, "outcome": "deadline_exceeded"})
+                raise TimeoutError("Argon request deadline exceeded; late response discarded")
+            try:
+                ok, interaction = results.get(
+                    timeout=0.1 if remaining is None else min(0.1, remaining)
+                )
+                break
+            except queue.Empty:
+                continue
         if not ok:
             if self.response_sink:
                 self.response_sink(
@@ -339,6 +391,7 @@ class ArgonClient:
         agentview_label: str = "Image A: front RGB",
         wrist_label: str = "Image B: wrist RGB",
         image_detail: Any = None,
+        additional_images: Sequence[tuple[str, RGB]] = (),
     ) -> VLMResponse:
         if schema is None:
             raise ValueError("Argon JSON requests require an explicit schema")
@@ -351,6 +404,7 @@ class ArgonClient:
             temperature,
             agentview_label,
             wrist_label,
+            additional_images,
         )
 
     def complete_text(
@@ -366,6 +420,7 @@ class ArgonClient:
         wrist_label: str = "Image B: wrist RGB",
         image_detail: Any = None,
         strip_reasoning: bool = True,
+        additional_images: Sequence[tuple[str, RGB]] = (),
     ) -> VLMResponse:
         return self._complete(
             prompt,
@@ -376,6 +431,7 @@ class ArgonClient:
             temperature,
             agentview_label,
             wrist_label,
+            additional_images,
         )
 
     def complete_token(
@@ -389,6 +445,7 @@ class ArgonClient:
         agentview_label: str = "Image A: front RGB",
         wrist_label: str = "Image B: wrist RGB",
         image_detail: Any = None,
+        additional_images: Sequence[tuple[str, RGB]] = (),
     ) -> VLMResponse:
         schema = {
             "type": "object",
@@ -397,5 +454,13 @@ class ArgonClient:
             "additionalProperties": False,
         }
         return self._complete(
-            prompt, agentview_image, wrist_image, schema, None, 0.0, agentview_label, wrist_label
+            prompt,
+            agentview_image,
+            wrist_image,
+            schema,
+            None,
+            0.0,
+            agentview_label,
+            wrist_label,
+            additional_images,
         )

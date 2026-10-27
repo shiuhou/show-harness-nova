@@ -99,7 +99,8 @@ class M1Supervisor:
         )
         if sample.robot_mode not in allowed_modes:
             raise _SupervisionFault("feedback robot mode invalidated M1")
-        if idle and sample.command_id != self.initial_command_id:
+        expected_idle = self.gate.expected_idle_command_id or self.initial_command_id
+        if idle and sample.command_id != expected_idle:
             raise _SupervisionFault("feedback queue changed before dispatch")
         with self._lock:
             if self._baseline is None:
@@ -114,7 +115,7 @@ class M1Supervisor:
                     or sample.runtime_ms < previous.runtime_ms
                 ):
                     raise _SupervisionFault("feedback controller clock regressed")
-                if sample.runtime_ms > previous.runtime_ms:
+                if sample.controller_unix_ms > previous.controller_unix_ms:
                     self._progress_at = now
                 elif now - self._progress_at >= self.feedback.config.feedback_max_age:
                     raise _SupervisionFault("feedback controller clock stopped progressing")

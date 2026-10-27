@@ -1,6 +1,6 @@
 # Supervised Nova M1
 
-The implemented path is one Argon decision, one operator confirmation and one
+The M1 path is one Argon decision, one operator confirmation and one
 existing inspect motion-gate execution. The controller offers only MV_FWD,
 MV_BACK, MV_LEFT, MV_RIGHT, MV_UP, MV_DOWN and DONE. Orientation remains fixed;
 gripper control, rotation, action chunking and automatic recovery are absent.
@@ -10,7 +10,7 @@ DONE requests ending; every result remains task_success=NOT_SCORED.
 
 - Upstream Show-Harness: `101bd59d3413d32a85d3afa1164f62ddf31f99da`.
 - Motion gate: `shiuhou/inspect-robots-dobot` at
-  `cc84d90c9d365cd700fbf610d6ca67c64b1ea3f8`; its upstream type dependency is
+  `9c1b77f2d57e60b6aa9f7a1d1442f92ac85c2ba7`; its upstream type dependency is
   pinned in requirements-nova.txt.
 - M1 offline integration: PASS. Production provider, strict ControllerAgent,
   interpreter, existing gate, CLI and durable evidence are exercised together
@@ -21,23 +21,20 @@ DONE requests ending; every result remains task_success=NOT_SCORED.
   from this response. Interactions returns NotFoundError on that gateway.
 - Physical single-translation M1: NOT_RUN. Hardware authorization and reviewed
   rig/calibration profiles are missing. Offline results establish neither
-  controller compatibility nor collision safety. M2–M5: NOT_STARTED.
+  controller compatibility nor collision safety. Full physical grasp and later acceptance remain incomplete.
 
 The engineering authority is the parent workspace's `.agents/docs/SPEC.md`.
 This runbook records the implemented interface, not permission to use devices.
 
-## Local research versus this release
+## Research versus physical acceptance
 
-The workspace research checkout contains later EEF, three-camera and web-workbench
-candidates. Its operator-run records include one restricted +Z 5 mm chain trial
-and subsequent small translations; full six-direction acceptance and completed
-grasp are not established. These outcomes do not validate this pinned M1 source.
-
-The 2026-10-27 publication review found 87 passing / 1 failing Nova tests and
-72 strict mypy errors in that local candidate, including the new workbench.
-It also depends on local inspect gate modifications. Those candidates are not
-part of this release. This repository continues to expose the verified M1
-interface described below, with physical acceptance still NOT_RUN for this version.
+This release includes the reviewed EEF/three-view/workbench software described
+below, with 158 passing tests and one skipped upstream test. The Nova/workbench
+subset passes 92 socket-blocked tests; strict mypy and Ruff pass. Firmware-exception
+handling, shutdown and cleanup have dedicated regressions in the owning repositories.
+Historical local operator trials do not validate this revised source; completed
+physical grasp and full M1 physical acceptance remain unestablished. Raw local
+traces and machine-specific configurations are not included.
 
 ## Installation and credentials
 
@@ -172,3 +169,42 @@ transport failures for both APIs. The SDK's Interactions retry-count conversion
 requires an isolated configuration workaround; remove it only after equivalent
 wire checks pass with a corrected SDK. CI installs the pinned sibling gate and
 runs these checks. Its hosted execution is separate from local verification.
+
+
+## Reviewed task/workbench research interface
+
+The separate `live --grasp` and `python -m core.nova.workbench` entry points support
+three named RGB views and EEF delta or token decisions. They are offline-tested
+research interfaces, not completed physical grasp acceptance. Existing M1 retains
+its one-decision, one-confirmation behavior. DONE remains NOT_SCORED.
+
+Task execution requires explicit connection/motion flags, current-session readiness,
+`--rig-config`, `--semantic-config`, `--monitoring`, `--cameras`, and
+`--gripper-settings /path/to/trusted/teleop_config.py`. The gripper settings reuse
+X-Trainer's existing Python configuration and therefore must be trusted; they are
+not data-only JSON. The sibling pinned X-Trainer runtime and its serial dependencies
+must be installed. No device path, polarity, calibration ID, direction convention
+or minimum height is inferred by the task interface. A local +Z micro-move profile
+cannot be promoted into a general grasp workspace. `--max-step-mm` may only narrow
+the reviewed semantic/gate budget.
+
+Firmware compatibility remains required unless the operator explicitly supplies
+`--allow-unknown-firmware` for an independently reviewed research session. That
+exception never establishes firmware compatibility. Each action retains a one-use
+gate capability; errors, cancellation and exhausted limits prevent subsequent sends.
+Optional `--max-actions`, `--task-lifetime` and `--observation-timeout` bound the
+session; their absence means no corresponding total limit, not a safety guarantee.
+Fresh state/queue/gripper checks still precede dispatch. No retry, enabling, clearing,
+homing or automatic release is added.
+
+Workbench startup opens no devices. Preview and task start are explicit local UI
+actions; stop latches cancellation. Shutdown rejects new work, waits for the task
+worker and attempts every camera close even if one close fails. The HTTP server
+binds loopback and checks Host/Origin plus a per-process token for write requests.
+An in-flight model HTTP call may outlive cancellation in its daemon thread; its
+late response cannot resume robot execution. Physical stop timing is unverified.
+
+Validate with socket-blocked `tests/test_nova_m1.py tests/test_nova_workbench.py`,
+strict mypy on `core/nova interpreters/nova_atomic_controller.py`, Ruff, and the
+upstream tests with loopback fixtures only. Local experimental traces and old
+operator trials remain outside this public interface documentation.

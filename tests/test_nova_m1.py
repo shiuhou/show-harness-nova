@@ -14,9 +14,15 @@ from google.genai import types
 from inspect_robots_dobot.feedback_client import DobotFeedbackClient
 
 from core.nova.argon import ARGON_MODEL, ArgonClient, local_settings, sdk_client
-from core.nova.cli import FixtureInteractions, fake_config, fake_gate, main, synthetic_observation
+from core.nova.cli import (
+    FixtureInteractions,
+    fake_config,
+    fake_gate,
+    main,
+    synthetic_observation,
+)
 from core.nova.contracts import M1_TOKENS, MOVE_TOKENS
-from core.nova.runner import M1Runner
+from core.nova.runner import GraspRunner, M1Runner
 from core.nova.supervision import M1Supervisor
 from core.record.episode_logger import M1Evidence
 from core.vlm.vlm_client import VLMResponse
@@ -60,6 +66,52 @@ def execute(runner, gate, proposal, **kwargs):
 
 def moves(peer):
     return [cmd for cmd in peer.sent if cmd.startswith(b"MovL(")]
+
+
+def test_grasp_task_observation_overrides_generic_holding_metadata(tmp_path):
+    from dataclasses import dataclass
+
+    @dataclass(frozen=True)
+    class Status:
+        model_number: int = 10760
+        servo_id: int = 1
+        position: int = 2490
+        torque_enabled: bool = False
+        moving: bool = False
+        load: int = 0
+        current: int = 0
+        voltage_raw: int = 244
+        temperature_raw: int = 40
+
+    class FakeGripper:
+        open_position = 2490
+        closed_position = 1470
+
+        def read_status(self):
+            return Status()
+
+    evidence = M1Evidence(tmp_path / "episode")
+    gate, _ = fake_gate(evidence)
+    client = ArgonClient(
+        SimpleNamespace(interactions=FixtureInteractions('{"decision":"DONE","reasoning":"done"}')),
+        timeout_s=1,
+    )
+    config = fake_config()
+    runner = GraspRunner(
+        gate,
+        config,
+        client,
+        evidence,
+        FakeGripper(),
+        max_actions=1,
+        monitor_health=lambda: None,
+    )
+
+    assert runner.step(synthetic_observation(gate, config), "pick", lambda _after: None) is None
+    rows = events(evidence)
+    observation = next(row for row in rows if row["kind"] == "task_observation")
+    assert observation["holding"] is False
+    assert observation["gripper"] == "OPEN"
 
 
 def events(evidence):
@@ -144,9 +196,16 @@ def test_done_is_end_request_only(tmp_path):
     p = runner.propose(obs, "task")
     assert p.plan is None and not moves(peer) and peer.closed
     terminal = [event for event in events(evidence) if event["kind"] == "terminal"]
-    assert terminal == [
-        {"kind": "terminal", "outcome": "end_requested", "task_success": "NOT_SCORED"}
-    ]
+    assert len(terminal) == 1
+    from datetime import datetime
+
+    timestamp = datetime.fromisoformat(terminal[0]["recorded_at"])
+    assert timestamp.utcoffset() is not None
+    assert {key: value for key, value in terminal[0].items() if key != "recorded_at"} == {
+        "kind": "terminal",
+        "outcome": "end_requested",
+        "task_success": "NOT_SCORED",
+    }
 
 
 def test_strict_role_independently_rejects_duplicate_raw_fields(tmp_path):
@@ -599,12 +658,12 @@ def test_provider_text_and_token_contracts_share_fixed_model_and_budget(api):
     assert len(requests) == 2 and all(r["model"] == ARGON_MODEL for r in requests)
 
 
-def feedback_wire(*, mode=5, command=42, user=0, enable=1, runtime=1000):
+def feedback_wire(*, mode=5, command=42, user=0, enable=1, runtime=1000, timestamp=None):
     """Fixed V4.6.5 packet fixture; parsing remains in the production receiver."""
     packet = bytearray(1440)
     struct.pack_into("<H", packet, 0, 1440)
     struct.pack_into("<Q", packet, 24, mode)
-    struct.pack_into("<Q", packet, 32, 100000 + runtime)
+    struct.pack_into("<Q", packet, 32, 100000 + runtime if timestamp is None else timestamp)
     struct.pack_into("<Q", packet, 40, runtime)
     struct.pack_into("<Q", packet, 48, 0x0123456789ABCDEF)
     struct.pack_into("<Q", packet, 1112, command)
@@ -666,6 +725,45 @@ def supervised(runner, gate, evidence, health=lambda: None, *, heartbeat=None):
     peer.packets.put(feedback_wire())
     supervisor.start()
     return supervisor, peer, calls, cancelled
+
+
+@pytest.mark.parametrize(
+    "timestamp,runtime,reason",
+    [
+        (101300, 1000, None),
+        (101000, 1001, "clock stopped progressing"),
+        (101000, 1000, "clock stopped progressing"),
+        (100999, 1001, "clock regressed"),
+        (101300, 999, "clock regressed"),
+    ],
+)
+def test_supervision_uses_timestamp_progress_and_rejects_either_counter_regression(
+    tmp_path, timestamp, runtime, reason
+):
+    runner, gate, peer, obs, evidence = setup(tmp_path)
+    accepted = threading.Event()
+    supervisor, receiver, calls, cancelled = supervised(runner, gate, evidence, accepted.set)
+    try:
+        for step in (1, 2):
+            accepted.clear()
+            gate.clock.sleep(0.1)
+            receiver.packets.put(feedback_wire(timestamp=101000, runtime=1000))
+            assert accepted.wait(0.1)
+        accepted.clear()
+        gate.clock.sleep(0.1)
+        receiver.packets.put(feedback_wire(timestamp=timestamp, runtime=runtime))
+        if reason is None:
+            assert accepted.wait(0.1), "a progressing TimeStamp must accept a static RunTime"
+            supervisor.check()
+            assert not cancelled.is_set()
+        else:
+            assert cancelled.wait(0.1)
+            with pytest.raises(RuntimeError, match=reason):
+                supervisor.check()
+    finally:
+        supervisor.close()
+    assert receiver.closed and not receiver.sent and len(calls) == 1
+    assert not moves(peer)
 
 
 @pytest.mark.parametrize(
