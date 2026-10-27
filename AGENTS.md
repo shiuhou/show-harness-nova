@@ -19,3 +19,7 @@ acceptance or authorize M2. Preserve upstream history and Apache-2.0 license.
 Publication destination: `shiuhou/show-harness-nova` origin/main. Publish focused,
 verified offline changes before updating the parent submodule pin. Review staged
 files, never stage credentials, settings, generated episodes or unrelated work.
+
+## Shared engineering specification
+
+Apply the Dobot workspace [engineering specification](https://github.com/shiuhou/dobot-astra-lab/blob/7106a99/.agents/docs/SPEC.md). In a Dobot workspace, read the root `.agents/docs/SPEC.md`; for a standalone clone use the pinned link. This is the single source for baseline/root-cause review, improvement acceptance, retirement, behavior validation and bounded artifacts. Preserve this repository's hardware, testing and publication rules. Keep tests/configuration in this repository; `.agents/` tracks only `docs/`, with plans/runs kept local. Complex tasks use one plan with a §0 progress/handoff section; simple tasks need none.

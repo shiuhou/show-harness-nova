@@ -26,6 +26,19 @@ DONE requests ending; every result remains task_success=NOT_SCORED.
 The engineering authority is the parent workspace's `.agents/docs/SPEC.md`.
 This runbook records the implemented interface, not permission to use devices.
 
+## Local research versus this release
+
+The workspace research checkout contains later EEF, three-camera and web-workbench
+candidates. Its operator-run records include one restricted +Z 5 mm chain trial
+and subsequent small translations; full six-direction acceptance and completed
+grasp are not established. These outcomes do not validate this pinned M1 source.
+
+The 2026-10-27 publication review found 87 passing / 1 failing Nova tests and
+72 strict mypy errors in that local candidate, including the new workbench.
+It also depends on local inspect gate modifications. Those candidates are not
+part of this release. This repository continues to expose the verified M1
+interface described below, with physical acceptance still NOT_RUN for this version.
+
 ## Installation and credentials
 
 Use Python 3.11. Place this repository and the pinned inspect repository in

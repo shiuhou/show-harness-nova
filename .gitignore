@@ -82,3 +82,7 @@ train/*.log
 third_party/LlamaFactory
 third_party/.uv-cache
 third_party/.cc-shim
+
+# Local engineering plans and diagnostic runs; shared rules stay in the meta repo.
+.agents/*
+!.agents/docs/
